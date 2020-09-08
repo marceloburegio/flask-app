@@ -1,0 +1,9 @@
+.circleci
+.git
+.terraform
+templates
+terraform
+.dockerignore
+.gitignore
+Dockerfile
+README.md

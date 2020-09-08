@@ -1,0 +1,95 @@
+version: 2
+jobs:
+  build:
+    docker:
+      - image: circleci/python:3.8.5
+    steps:
+      - setup_remote_docker
+      - run:
+          name: Checking Environment Variables
+          command: |
+            if [[ -z "$AWS_ACCESS_KEY_ID" || -z "$AWS_SECRET_ACCESS_KEY" || -z "$AWS_DEFAULT_REGION" || -z "$AWS_ACCOUNT_ID" || -z "$AWS_CLI_VERSION" || -z "$TERRAFORM_VERSION" || -z "$IMAGE_REGION" || -z "$IMAGE_REPOSITORY" || -z "$BACKEND_S3_STATE_REGION" || -z "$BACKEND_S3_STATE_BUCKET" || -z "$BACKEND_S3_STATE_KEY" ]]; then echo "Some variables are not set. Check the configuration and try again."; exit 1; fi
+      - run:
+          name: Install awscli
+          command: |
+            pip3 install --upgrade awscli==${AWS_CLI_VERSION}
+            aws --version
+      - checkout
+      - run:
+          name: Build and Push Docker image to AWS ECR
+          command: |
+            IMAGE_TAG="$(echo $CIRCLE_SHA1 | head -c 7)"
+            CONTAINER_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${IMAGE_REGION}.amazonaws.com"
+            aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $CONTAINER_REGISTRY
+            docker build . -t $CONTAINER_REGISTRY/$IMAGE_REPOSITORY:$IMAGE_TAG
+            docker push $CONTAINER_REGISTRY/$IMAGE_REPOSITORY
+  deploy:
+    docker:
+      - image: circleci/python:3.8.5
+    steps:
+      - run:
+          name: Checking Environment Variables
+          command: |
+            if [[ -z "$AWS_ACCESS_KEY_ID" || -z "$AWS_SECRET_ACCESS_KEY" || -z "$AWS_DEFAULT_REGION" || -z "$AWS_ACCOUNT_ID" || -z "$AWS_CLI_VERSION" || -z "$TERRAFORM_VERSION" || -z "$IMAGE_REGION" || -z "$IMAGE_REPOSITORY" || -z "$BACKEND_S3_STATE_REGION" || -z "$BACKEND_S3_STATE_BUCKET" || -z "$BACKEND_S3_STATE_KEY" ]]; then echo "Some variables are not set. Check the configuration and try again."; exit 1; fi
+      - run:
+          name: Installing terraform
+          command: |
+            curl -O https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip
+            sudo unzip -qq terraform_${TERRAFORM_VERSION}_linux_amd64.zip -d /usr/bin
+            rm -f terraform_${TERRAFORM_VERSION}_linux_amd64.zip
+            terraform version
+      - checkout
+      - run:
+          name: Deploy infrastructure
+          command: |
+            IMAGE_TAG="$(echo $CIRCLE_SHA1 | head -c 7)"
+            export TF_VAR_aws_account_id=$AWS_ACCOUNT_ID
+            export TF_VAR_aws_region=$AWS_DEFAULT_REGION
+            export TF_VAR_image_repository=$IMAGE_REPOSITORY
+            export TF_VAR_image_region=$IMAGE_REGION
+            export TF_VAR_image_tag=$IMAGE_TAG
+            terraform init -backend-config="region=${BACKEND_S3_STATE_REGION}" -backend-config="bucket=${BACKEND_S3_STATE_BUCKET}" -backend-config="key=${BACKEND_S3_STATE_KEY}" terraform
+            terraform plan terraform/
+            terraform apply -auto-approve terraform/
+  destroy:
+    docker:
+      - image: circleci/python:3.8.5
+    steps:
+      - run:
+          name: Checking Environment Variables
+          command: |
+            if [[ -z "$AWS_ACCESS_KEY_ID" || -z "$AWS_SECRET_ACCESS_KEY" || -z "$AWS_DEFAULT_REGION" || -z "$AWS_ACCOUNT_ID" || -z "$AWS_CLI_VERSION" || -z "$TERRAFORM_VERSION" || -z "$IMAGE_REGION" || -z "$IMAGE_REPOSITORY" || -z "$BACKEND_S3_STATE_REGION" || -z "$BACKEND_S3_STATE_BUCKET" || -z "$BACKEND_S3_STATE_KEY" ]]; then echo "Some variables are not set. Check the configuration and try again."; exit 1; fi
+      - run:
+          name: Installing terraform
+          command: |
+            curl -O https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip
+            sudo unzip -qq terraform_${TERRAFORM_VERSION}_linux_amd64.zip -d /usr/bin
+            rm -f terraform_${TERRAFORM_VERSION}_linux_amd64.zip
+            terraform version
+      - checkout
+      - run:
+          name: Destroy infrastructure
+          command: |
+            IMAGE_TAG="$(echo $CIRCLE_SHA1 | head -c 7)"
+            export TF_VAR_aws_account_id=$AWS_ACCOUNT_ID
+            export TF_VAR_aws_region=$AWS_DEFAULT_REGION
+            export TF_VAR_image_repository=$IMAGE_REPOSITORY
+            export TF_VAR_image_region=$IMAGE_REGION
+            export TF_VAR_image_tag=$IMAGE_TAG
+            terraform init -backend-config="region=${BACKEND_S3_STATE_REGION}" -backend-config="bucket=${BACKEND_S3_STATE_BUCKET}" -backend-config="key=${BACKEND_S3_STATE_KEY}" terraform
+            terraform destroy -auto-approve terraform/
+workflows:
+  version: 2
+  build-and-deploy:
+    jobs:
+      - build
+      - deploy:
+          requires:
+            - build
+      - hold-destroy:
+          type: approval
+          requires:
+            - deploy
+      - destroy:
+          requires:
+            - hold-destroy
